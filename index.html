@@ -1,0 +1,366 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <title>Hello WebXR!</title>
+    <script type="text/javascript" src="https://spectorcdn.babylonjs.com/spector.bundle.js"></script>
+    <!-- three.js -->
+    <script src="https://unpkg.com/three@0.144.0/build/three.js"></script>
+    <script src="https://unpkg.com/three@0.144.0/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+
+<body>
+
+    <!-- Starting an immersive WebXR session requires user interaction.
+    We start this one with a simple button. -->
+    <button onclick="activateXR()">Start Hello WebXR</button>
+    <script>
+
+        var spector = new SPECTOR.Spector();
+
+        async function activateXR() {
+            spector.displayUI();
+            // Add a canvas element and initialize a WebGL context that is compatible with WebXR.
+            const canvas = document.createElement("canvas");
+            document.body.appendChild(canvas);
+            const gl = canvas.getContext("webgl2", { xrCompatible: true });
+
+            // To be continued in upcoming steps.
+            const scene = new THREE.Scene();
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.3);
+            directionalLight.position.set(10, 15, 10);
+            scene.add(directionalLight);
+
+            // Set up the WebGLRenderer, which handles rendering to the session's base layer.
+            const renderer = new THREE.WebGLRenderer({
+                alpha: true,
+                preserveDrawingBuffer: true,
+                canvas: canvas,
+                context: gl
+            });
+            renderer.autoClear = false;
+
+            // The API directly updates the camera matrices.
+            // Disable matrix auto updates so three.js doesn't attempt
+            // to handle the matrices independently.
+            const camera = new THREE.PerspectiveCamera();
+            camera.matrixAutoUpdate = false;
+
+            // Initialize a WebXR session using "immersive-ar".
+            const session = await navigator.xr.requestSession("immersive-ar", {
+                requiredFeatures: ["hit-test", "camera-access"],
+            });
+            const glBinding = new XRWebGLBinding(session, gl);
+
+            //console.log(session.depthUsage);
+            //console.log(session.depthFormat);
+
+            session.updateRenderState({
+                baseLayer: new XRWebGLLayer(session, gl)
+            });
+
+            // A 'local' reference space has a native origin that is located
+            // near the viewer's position at the time the session was created.
+            const referenceSpace = await session.requestReferenceSpace('local');
+
+            // Create another XRReferenceSpace that has the viewer as the origin.
+            const viewerSpace = await session.requestReferenceSpace('viewer');
+            // Perform hit testing using the viewer as origin.
+
+            const frameWidth = 10;
+            const frameHeight = 10;
+            const dirXRange = 0.1;
+            const dirYRange = 0.1;
+
+            const hitTestArray = [];
+
+            for (var x = 0; x < frameWidth; x++) {
+                const hitTestVerticalArray = [];
+                for (var y = 0; y < frameHeight; y++) {
+                    const offsetXRRay = new XRRay({ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }, { x: dirXRange * (x / frameWidth - 0.5), y: dirYRange * (y / frameHeight - 0.5), z: -1.0, w: 0.0 });
+                    const hitTest = await session.requestHitTestSource({ space: viewerSpace, offsetRay: offsetXRRay });
+                    hitTestVerticalArray.push(hitTest);
+                }
+                hitTestArray.push(hitTestVerticalArray);
+            }
+
+            const hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+            const loader = new THREE.GLTFLoader();
+            let reticle;
+            loader.load("https://immersive-web.github.io/webxr-samples/media/gltf/reticle/reticle.gltf", function (gltf) {
+                reticle = gltf.scene;
+                reticle.visible = false;
+                scene.add(reticle);
+            })
+
+            let flower;
+            loader.load("https://immersive-web.github.io/webxr-samples/media/gltf/sunflower/sunflower.gltf", function (gltf) {
+                flower = gltf.scene;
+            });
+
+            session.addEventListener("select", (event) => {
+                if (flower) {
+                    const clone = flower.clone();
+                    clone.position.copy(reticle.position);
+                    scene.add(clone);
+                }
+            });
+            var readback_framebuffer = gl.createFramebuffer();
+            var readback_pixels;
+            var polycount = 0;
+
+            /* Create generated data (BufferGeometry, DataTexture, Mesh) */
+            const maxVertices = 20000;
+            const maxFaces = maxVertices * 3;
+            const genTextureSize = 4096;
+            const genFaceTextureSize = 64;
+            const maxFaceTextures = genTextureSize * genTextureSize / (genFaceTextureSize * genFaceTextureSize);
+
+            //triplets won't be deleted
+            const triplets = [];
+            var faceCount = 0;
+
+            const genFacesArea = new Float32Array(maxFaceTextures).fill(0);
+            const genFaceTextureUsage = new Uint16Array(maxFaces).fill(-1);
+            const genFaceUsed = new Uint8Array(maxFaceTextures).fill(0);
+
+            var genVertexCount = 0;
+
+            const genGeometry = new THREE.BufferGeometry();
+            genGeometry.setIndex(new THREE.BufferAttribute(new Float32Array(maxFaces).fill(0), 3, false));
+            genGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxVertices * 3).fill(0), 3, false));
+            genGeometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(maxVertices * 2).fill(0), 2, true));
+
+            var baseTextureData = new Uint8Array(genTextureSize * genTextureSize * 4).fill(0);
+            var xrTexture = new THREE.DataTexture(baseTextureData, genTextureSize, genTextureSize);
+            xrTexture.minFilter = THREE.LinearFilter;
+            xrTexture.needsUpdate = true;
+
+            var baseFaceTextureData = new Uint8Array(genFaceTextureSize * genFaceTextureSize * 4).fill(0);
+            var copyFaceTexture = new THREE.DataTexture(baseFaceTextureData, genFaceTextureSize, genFaceTextureSize);
+
+            const genMaterial = new THREE.MeshBasicMaterial({
+                side: THREE.DoubleSide,
+                map: xrTexture,
+            });
+
+            const genMesh = new THREE.Mesh(genGeometry, genMaterial);
+            scene.add(genMesh);
+            /* Gen Mesh done */
+
+            const polygonize = (view, backgroundLayer, frame, camera_pixels) => {
+
+                const viewport = backgroundLayer.getViewport(view);
+
+                const mininumDistance = 0.05;
+
+                const faceDistanceTreshold = 1.4 * mininumDistance;
+
+                const pairIntegers = (a, b) => {
+                    return Math.round(((a + b) * (a + b + 1) + b) / 2);
+                }
+
+                const tripletIntegers = (a, b, c) => {
+                    return pairIntegers(pairIntegers(a, b), c);
+                }
+
+                const _isTooCloseVec = new THREE.Vector3();
+                const isTooClose = (pos, minDist, arr, count) => {
+                    for (var i = 0; i < count; i++) {
+                        if (pos.distanceToSquared(_isTooCloseVec.fromBufferAttribute(arr, i)) < minDist * minDist) return true;
+                    }
+                    return false;
+                }
+
+                const viewMat = new THREE.Matrix4().fromArray(view.projectionMatrix);
+                const viewMatInv = new THREE.Matrix4().fromArray(view.projectionMatrix).invert();
+                const camMatrix = new THREE.Matrix4().fromArray(view.transform.matrix);
+                const camMatrixInv = new THREE.Matrix4().fromArray(view.transform.matrix).invert();
+                const camPosition = new THREE.Vector3().setFromMatrixPosition(camMatrix);
+                //const depthInfo = frame.getDepthInformation(view);
+
+                const posVec = new THREE.Vector3();
+                const projectVec = new THREE.Vector3();
+
+                const scaleX = view.camera.width / viewport.width;
+                const scaleY = view.camera.height / viewport.height;
+                //console.log("Scales (X, Y):", scaleX, scaleY);
+
+                var hitResultCount = 0;
+                var remainingVertexCount = 0;
+                for (var x = 0; x < frameWidth; x++) {
+                    for (var y = 0; y < frameHeight; y++) {
+                        const hitTestResults = frame.getHitTestResults(hitTestArray[x][y]);
+                        if (hitTestResults.length > 0) {
+                            const hitPose = hitTestResults[0].getPose(referenceSpace);
+                            posVec.set(hitPose.transform.position.x, hitPose.transform.position.y, hitPose.transform.position.z);
+                            if (!isTooClose(posVec, mininumDistance, genGeometry.attributes.position, genVertexCount)) {
+                                /* to rearrange
+                                projectVec.copy(position);
+                                projectVec.applyMatrix4(camMatrixInv);
+                                projectVec.applyMatrix4(viewMat);
+                                uvs.push((scaleX * projectVec.x + 1.0) / 2, (scaleY * projectVec.y + 1.0) / 2);
+                                */
+                                genGeometry.attributes.position.setXYZ(genVertexCount, posVec.x, posVec.y, posVec.z);
+                                genVertexCount++;
+                                remainingVertexCount++;
+                            }
+                            hitResultCount++;
+                        }
+                    }
+                }
+                // Don't reset faces
+                for (var i = 0; i + 2 < genVertexCount; i++) {
+                    for (var j = i + 1; j + 1 < genVertexCount; j++) {
+                        if (posVec.fromBufferAttribute(genGeometry.attributes.position, i).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.attributes.position, j)) < faceDistanceTreshold * faceDistanceTreshold) {
+                            //console.log("got dist OK 1");
+                            for (var k = j + 1; k < genVertexCount; k++) {
+                                if (triplets.indexOf(tripletIntegers(i, j, k)) == -1 &&
+                                    posVec.fromBufferAttribute(genGeometry.attributes.position, k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.attributes.position, i)) < faceDistanceTreshold * faceDistanceTreshold &&
+                                    posVec.fromBufferAttribute(genGeometry.attributes.position, k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.attributes.position, j)) < faceDistanceTreshold * faceDistanceTreshold) {
+                                    genGeometry.index.setXYZ(faceCount++, i, j, k);
+                                    triplets.push(tripletIntegers(i, j, k));
+                                }
+                            }
+                        }
+                    }
+                }
+                genGeometry.index.needsUpdate = true;
+                genGeometry.attributes.position.needsUpdate = true;
+                genGeometry.attributes.uv.needsUpdate = true;
+                const faceTriangle = new THREE.Triangle();
+
+                const posA = new THREE.Vector3(), posB = new THREE.Vector3(), posC = new THREE.Vector3();
+
+                const pasteTexture = (origin, sx, sy, sw, sh, destination, dx, dy, w, h) => {
+                    for (var i = sx; i < sx + sw; i++) {
+                        for (var j = sy; j < sy + sh; j++) {
+                            for (var c = 0; c < 4; c++) {
+                                destination[dx + Math.ceil(w * (i + c - sx) / sw)] = origin[i + c];
+                            }
+                        }
+                    }
+                }
+
+                const findEmptyFace = () => {
+                    for (var i = 0; i < maxFaceTextures; i++) {
+                        if (!genFaceUsed[i]) return i;
+                    }
+                    return -1;
+                }
+
+                var freeFaceIndex = 0;
+                //console.log("Current face count :", triplets.length);
+                const texCopyVec = new THREE.Vector2();
+                for (var faceIndex = 0; faceIndex < faceCount && faceIndex < maxFaces; faceIndex++) {
+                    const i = faceIndex;
+                    //console.log("Hit results :", hitResultCount);
+                    //console.log("Remaining vertices :", remainingVertexCount);
+                    //console.log("Got faces to add!");
+                    const vA = genGeometry.index.getX(i), vB = genGeometry.index.getY(i), vC = genGeometry.index.getZ(i);
+                    posA.fromBufferAttribute(genGeometry.attributes.position, vA)
+                        .applyMatrix4(camMatrixInv)
+                        .applyMatrix4(viewMat);
+                    posB.fromBufferAttribute(genGeometry.attributes.position, vB)
+                        .applyMatrix4(camMatrixInv)
+                        .applyMatrix4(viewMat);
+                    posC.fromBufferAttribute(genGeometry.attributes.position, vC)
+                        .applyMatrix4(camMatrixInv)
+                        .applyMatrix4(viewMat);
+                    faceTriangle.set(posA, posB, posC);
+                    var faceArea = faceTriangle.getArea();
+                    if (faceArea > genFacesArea[faceIndex]) {
+                        //console.log("Adding/Updating Face!");
+                        const uvA_x = (scaleX * posA.x + 1.0) / 2, uvB_x = (scaleX * posB.x + 1.0) / 2, uvC_x = (scaleX * posC.x + 1.0) / 2;
+                        const uvA_y = (scaleY * posA.y + 1.0) / 2, uvB_y = (scaleY * posB.y + 1.0) / 2, uvC_y = (scaleY * posC.y + 1.0) / 2;
+                        const uvX_min = Math.min(uvA_x, uvB_x, uvC_x), uvX_max = Math.max(uvA_x, uvB_x, uvC_x);
+                        const uvY_min = Math.min(uvA_y, uvB_y, uvC_y), uvY_max = Math.max(uvA_y, uvB_y, uvC_y);
+                        genFacesArea[faceIndex] = faceArea;
+                        const texWidth = view.camera.width, texHeight = view.camera.height;
+                        const faceNb = Math.floor(genTextureSize / genFaceTextureSize);
+                        const fX = Math.floor(faceIndex / faceNb),
+                            fY = faceIndex % faceNb;
+                        pasteTexture(camera_pixels, Math.round(uvX_min * texWidth),
+                            Math.round(uvY_min * texHeight), Math.round((uvX_max - uvX_min) * texWidth),
+                            Math.round((uvY_max - uvY_min) * texWidth),
+                            copyFaceTexture.image.data, 0, 0, genFaceTextureSize, genFaceTextureSize);
+                        texCopyVec.set(fX*genFaceTextureSize, fY*genFaceTextureSize);
+                        console.log(texCopyVec, copyFaceTexture.image.width, copyFaceTexture.image.height, xrTexture.image.width, xrTexture.image.height);
+					    renderer.copyTextureToTexture( texCopyVec, copyFaceTexture, xrTexture );
+
+
+                        const nfX = - 1 + 2*(fX + 0.5) / faceNb, nfY = -1 + 2*(fY + 0.5) / faceNb;
+                        genGeometry.attributes.uv.setXY(vA, 0.5*(1 + nfX + uvA_x / ((uvX_max - uvX_min)*genFaceTextureSize)), 0.5*(1 + nfY + uvA_y / ((uvY_max - uvY_min)*genFaceTextureSize)));
+                        genGeometry.attributes.uv.setXY(vB, 0.5*(1 + nfX + uvB_x / ((uvX_max - uvX_min)*genFaceTextureSize)), 0.5*(1 + nfY + uvB_y / ((uvY_max - uvY_min)*genFaceTextureSize)));
+                        genGeometry.attributes.uv.setXY(vC, 0.5*(1 + nfX + uvC_x / ((uvX_max - uvX_min)*genFaceTextureSize)), 0.5*(1 + nfY + uvC_y / ((uvY_max - uvY_min)*genFaceTextureSize)));
+
+                    }
+                }
+
+            }
+
+            const onXRFrame = (time, frame) => {
+                // Queue up the next draw request.
+                session.requestAnimationFrame(onXRFrame);
+
+
+                // Retrieve the pose of the device.
+                // XRFrame.getViewerPose can return null while the session attempts to establish tracking.
+                const pose = frame.getViewerPose(referenceSpace);
+                if (pose) {
+                    // In mobile AR, we only have one view.
+                    const view = pose.views[0];
+
+                    const texture = glBinding.getCameraImage(view.camera);
+
+                    const texture_bytes = view.camera.width * view.camera.height * 4;
+                    if (!readback_pixels || readback_pixels.length != texture_bytes) {
+                        readback_pixels = new Uint8Array(texture_bytes);
+                    }
+
+                    readback_pixels.fill(0);
+
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, readback_framebuffer);
+                    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                        gl.TEXTURE_2D, texture, 0);
+                    gl.readPixels(0, 0, view.camera.width, view.camera.height,
+                        gl.RGBA, gl.UNSIGNED_BYTE, readback_pixels);
+
+                    if (polycount == 0 || true) polygonize(view, session.renderState.baseLayer, frame, readback_pixels);
+
+                    const viewport = session.renderState.baseLayer.getViewport(view);
+                    renderer.setSize(viewport.width, viewport.height)
+
+                    // Use the view's transform matrix and projection matrix to configure the THREE.camera.
+                    camera.matrix.fromArray(view.transform.matrix)
+                    camera.projectionMatrix.fromArray(view.projectionMatrix);
+                    camera.updateMatrixWorld(true);
+
+                    const hitTestResults = frame.getHitTestResults(hitTestSource);
+                    if (hitTestResults.length > 0 && reticle) {
+                        const hitPose = hitTestResults[0].getPose(referenceSpace);
+                        reticle.visible = true;
+                        reticle.position.set(hitPose.transform.position.x, hitPose.transform.position.y, hitPose.transform.position.z)
+                        reticle.updateMatrixWorld(true);
+                    }
+
+                    // Bind the graphics framebuffer to the baseLayer's framebuffer
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer)
+
+                    // Render the scene with THREE.WebGLRenderer.
+                    renderer.render(scene, camera)
+                }
+            }
+            session.requestAnimationFrame(onXRFrame);
+        }
+
+    </script>
+</body>
+
+</html>
