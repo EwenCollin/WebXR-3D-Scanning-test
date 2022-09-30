@@ -18,6 +18,38 @@
     We start this one with a simple button. -->
     <button onclick="activateXR()">Start Hello WebXR</button>
     <script>
+        function getCameraIntrinsics(projectionMatrix, viewport) {
+            const p = projectionMatrix;
+
+            // Principal point in pixels (typically at or near the center of the viewport)
+            let u0 = (1 - p[8]) * viewport.width / 2 + viewport.x;
+            let v0 = (1 - p[9]) * viewport.height / 2 + viewport.y;
+
+            // Focal lengths in pixels (these are equal for square pixels)
+            let ax = viewport.width / 2 * p[0];
+            let ay = viewport.height / 2 * p[5];
+
+            // Skew factor in pixels (nonzero for rhomboid pixels)
+            let gamma = viewport.width / 2 * p[4];
+
+            // Print the calculated intrinsics:
+            const intrinsicString = (
+                "intrinsics: u0=" + u0 + " v0=" + v0 + " ax=" + ax + " ay=" + ay +
+                " gamma=" + gamma + " for viewport {width=" +
+                viewport.width + ",height=" + viewport.height + ",x=" +
+                viewport.x + ",y=" + viewport.y + "}");
+
+            console.log("projection:", Array.from(projectionMatrix).join(", "));
+            console.log(intrinsicString);
+            const retMatrix = new THREE.Matrix4();
+            retMatrix.set(
+                ax, gamma, u0, 0,
+                0, ay, v0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 0
+            );
+            return retMatrix;
+        }
 
         var spector = new SPECTOR.Spector();
 
@@ -132,16 +164,21 @@
             var genVertexCount = 0;
 
             const genGeometry = new THREE.BufferGeometry();
-            genGeometry.setIndex(new THREE.BufferAttribute(new Float32Array(maxFaces).fill(0), 3, false));
-            genGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxVertices * 3).fill(0), 3, false));
-            genGeometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(maxVertices * 2).fill(0), 2, true));
+            genGeometry.setIndex(new THREE.BufferAttribute(new Uint16Array(maxFaces).fill(0), 3));
+            genGeometry.index.setUsage(THREE.DynamicDrawUsage);
+            genGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxVertices * 3).fill(0), 3));
+            genGeometry.getAttribute("position").setUsage(THREE.StreamDrawUsage);
+            genGeometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(maxVertices * 3).fill(0), 3));
+            genGeometry.getAttribute("normal").setUsage(THREE.StreamDrawUsage);
+            genGeometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(maxVertices * 2).fill(0), 2));
+            genGeometry.getAttribute("uv").setUsage(THREE.StreamDrawUsage);
 
-            var baseTextureData = new Uint8Array(genTextureSize * genTextureSize * 4).fill(0);
+            var baseTextureData = new Uint8Array(genTextureSize * genTextureSize * 4).fill(255);
             var xrTexture = new THREE.DataTexture(baseTextureData, genTextureSize, genTextureSize);
-            xrTexture.minFilter = THREE.LinearFilter;
+            xrTexture.minFilter = THREE.NearestFilter;
             xrTexture.needsUpdate = true;
 
-            var baseFaceTextureData = new Uint8Array(genFaceTextureSize * genFaceTextureSize * 4).fill(0);
+            var baseFaceTextureData = new Uint8Array(genFaceTextureSize * genFaceTextureSize * 4).fill(255);
             var copyFaceTexture = new THREE.DataTexture(baseFaceTextureData, genFaceTextureSize, genFaceTextureSize);
 
             const genMaterial = new THREE.MeshBasicMaterial({
@@ -177,7 +214,7 @@
                     return false;
                 }
 
-                const viewMat = new THREE.Matrix4().fromArray(view.projectionMatrix);
+                const viewMat = getCameraIntrinsics(view.projectionMatrix, viewport);//new THREE.Matrix4().fromArray(view.projectionMatrix);
                 const viewMatInv = new THREE.Matrix4().fromArray(view.projectionMatrix).invert();
                 const camMatrix = new THREE.Matrix4().fromArray(view.transform.matrix);
                 const camMatrixInv = new THREE.Matrix4().fromArray(view.transform.matrix).invert();
@@ -191,6 +228,8 @@
                 const scaleY = view.camera.height / viewport.height;
                 //console.log("Scales (X, Y):", scaleX, scaleY);
 
+                //if (genVertexCount > 0) console.log("last added vertex: ", genVertexCount - 1, genGeometry.getAttribute("position").getX(genVertexCount - 1), genGeometry.getAttribute("position").getY(genVertexCount - 1), genGeometry.getAttribute("position").getZ(genVertexCount - 1));
+
                 var hitResultCount = 0;
                 var remainingVertexCount = 0;
                 for (var x = 0; x < frameWidth; x++) {
@@ -199,14 +238,16 @@
                         if (hitTestResults.length > 0) {
                             const hitPose = hitTestResults[0].getPose(referenceSpace);
                             posVec.set(hitPose.transform.position.x, hitPose.transform.position.y, hitPose.transform.position.z);
-                            if (!isTooClose(posVec, mininumDistance, genGeometry.attributes.position, genVertexCount)) {
+                            if (!isTooClose(posVec, mininumDistance, genGeometry.getAttribute("position"), genVertexCount)) {
                                 /* to rearrange
                                 projectVec.copy(position);
                                 projectVec.applyMatrix4(camMatrixInv);
                                 projectVec.applyMatrix4(viewMat);
                                 uvs.push((scaleX * projectVec.x + 1.0) / 2, (scaleY * projectVec.y + 1.0) / 2);
                                 */
-                                genGeometry.attributes.position.setXYZ(genVertexCount, posVec.x, posVec.y, posVec.z);
+                                //console.log(genVertexCount, posVec.x, posVec.y, posVec.z);
+                                genGeometry.getAttribute("position").setXYZ(genVertexCount, posVec.x, posVec.y, posVec.z);
+                                //console.log("last added vertex af: ", genVertexCount, genGeometry.getAttribute("position").getX(genVertexCount), genGeometry.getAttribute("position").getY(genVertexCount), genGeometry.getAttribute("position").getZ(genVertexCount));
                                 genVertexCount++;
                                 remainingVertexCount++;
                             }
@@ -217,12 +258,12 @@
                 // Don't reset faces
                 for (var i = 0; i + 2 < genVertexCount; i++) {
                     for (var j = i + 1; j + 1 < genVertexCount; j++) {
-                        if (posVec.fromBufferAttribute(genGeometry.attributes.position, i).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.attributes.position, j)) < faceDistanceTreshold * faceDistanceTreshold) {
+                        if (posVec.fromBufferAttribute(genGeometry.getAttribute("position"), i).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.getAttribute("position"), j)) < faceDistanceTreshold * faceDistanceTreshold) {
                             //console.log("got dist OK 1");
                             for (var k = j + 1; k < genVertexCount; k++) {
                                 if (triplets.indexOf(tripletIntegers(i, j, k)) == -1 &&
-                                    posVec.fromBufferAttribute(genGeometry.attributes.position, k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.attributes.position, i)) < faceDistanceTreshold * faceDistanceTreshold &&
-                                    posVec.fromBufferAttribute(genGeometry.attributes.position, k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.attributes.position, j)) < faceDistanceTreshold * faceDistanceTreshold) {
+                                    posVec.fromBufferAttribute(genGeometry.getAttribute("position"), k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.getAttribute("position"), i)) < faceDistanceTreshold * faceDistanceTreshold &&
+                                    posVec.fromBufferAttribute(genGeometry.getAttribute("position"), k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.getAttribute("position"), j)) < faceDistanceTreshold * faceDistanceTreshold) {
                                     genGeometry.index.setXYZ(faceCount++, i, j, k);
                                     triplets.push(tripletIntegers(i, j, k));
                                 }
@@ -230,12 +271,11 @@
                         }
                     }
                 }
-                genGeometry.index.needsUpdate = true;
-                genGeometry.attributes.position.needsUpdate = true;
-                genGeometry.attributes.uv.needsUpdate = true;
                 const faceTriangle = new THREE.Triangle();
 
-                const posA = new THREE.Vector3(), posB = new THREE.Vector3(), posC = new THREE.Vector3();
+                const posA = new THREE.Vector3();
+                const posB = new THREE.Vector3();
+                const posC = new THREE.Vector3();
 
                 const pasteTexture = (origin, sx, sy, sw, sh, destination, dx, dy, w, h) => {
                     for (var i = sx; i < sx + sw; i++) {
@@ -263,45 +303,52 @@
                     //console.log("Remaining vertices :", remainingVertexCount);
                     //console.log("Got faces to add!");
                     const vA = genGeometry.index.getX(i), vB = genGeometry.index.getY(i), vC = genGeometry.index.getZ(i);
-                    posA.fromBufferAttribute(genGeometry.attributes.position, vA)
+                    posA.fromBufferAttribute(genGeometry.getAttribute("position"), vA)
                         .applyMatrix4(camMatrixInv)
                         .applyMatrix4(viewMat);
-                    posB.fromBufferAttribute(genGeometry.attributes.position, vB)
+                    posB.fromBufferAttribute(genGeometry.getAttribute("position"), vB)
                         .applyMatrix4(camMatrixInv)
                         .applyMatrix4(viewMat);
-                    posC.fromBufferAttribute(genGeometry.attributes.position, vC)
+                    posC.fromBufferAttribute(genGeometry.getAttribute("position"), vC)
                         .applyMatrix4(camMatrixInv)
                         .applyMatrix4(viewMat);
                     faceTriangle.set(posA, posB, posC);
                     var faceArea = faceTriangle.getArea();
                     if (faceArea > genFacesArea[faceIndex]) {
                         //console.log("Adding/Updating Face!");
-                        const uvA_x = (scaleX * posA.x + 1.0) / 2, uvB_x = (scaleX * posB.x + 1.0) / 2, uvC_x = (scaleX * posC.x + 1.0) / 2;
-                        const uvA_y = (scaleY * posA.y + 1.0) / 2, uvB_y = (scaleY * posB.y + 1.0) / 2, uvC_y = (scaleY * posC.y + 1.0) / 2;
+                        const texWidth = view.camera.width, texHeight = view.camera.height;
+                        const uvA_x = posA.x/texWidth, uvB_x = posB.x/texWidth, uvC_x = posC.x/texWidth;
+                        const uvA_y = posA.y/texHeight, uvB_y = posB.y/texHeight, uvC_y = posC.y/texHeight;
                         const uvX_min = Math.min(uvA_x, uvB_x, uvC_x), uvX_max = Math.max(uvA_x, uvB_x, uvC_x);
                         const uvY_min = Math.min(uvA_y, uvB_y, uvC_y), uvY_max = Math.max(uvA_y, uvB_y, uvC_y);
                         genFacesArea[faceIndex] = faceArea;
-                        const texWidth = view.camera.width, texHeight = view.camera.height;
                         const faceNb = Math.floor(genTextureSize / genFaceTextureSize);
                         const fX = Math.floor(faceIndex / faceNb),
                             fY = faceIndex % faceNb;
+                        
                         pasteTexture(camera_pixels, Math.round(uvX_min * texWidth),
-                            Math.round(uvY_min * texHeight), Math.round((uvX_max - uvX_min) * texWidth),
-                            Math.round((uvY_max - uvY_min) * texWidth),
+                            texHeight - Math.round(uvY_min * texHeight), Math.round((uvX_max - uvX_min) * texWidth),
+                            Math.round((uvY_max - uvY_min) * texHeight),
                             copyFaceTexture.image.data, 0, 0, genFaceTextureSize, genFaceTextureSize);
-                        texCopyVec.set(fX*genFaceTextureSize, fY*genFaceTextureSize);
-                        console.log(texCopyVec, copyFaceTexture.image.width, copyFaceTexture.image.height, xrTexture.image.width, xrTexture.image.height);
-					    renderer.copyTextureToTexture( texCopyVec, copyFaceTexture, xrTexture );
+                        
+                        texCopyVec.set(fX * genFaceTextureSize, fY * genFaceTextureSize);
+                        //console.log(texCopyVec, copyFaceTexture.image.width, copyFaceTexture.image.height, xrTexture.image.width, xrTexture.image.height);
+                        renderer.copyTextureToTexture( texCopyVec, copyFaceTexture, xrTexture);
 
 
-                        const nfX = - 1 + 2*(fX + 0.5) / faceNb, nfY = -1 + 2*(fY + 0.5) / faceNb;
-                        genGeometry.attributes.uv.setXY(vA, 0.5*(1 + nfX + uvA_x / ((uvX_max - uvX_min)*genFaceTextureSize)), 0.5*(1 + nfY + uvA_y / ((uvY_max - uvY_min)*genFaceTextureSize)));
-                        genGeometry.attributes.uv.setXY(vB, 0.5*(1 + nfX + uvB_x / ((uvX_max - uvX_min)*genFaceTextureSize)), 0.5*(1 + nfY + uvB_y / ((uvY_max - uvY_min)*genFaceTextureSize)));
-                        genGeometry.attributes.uv.setXY(vC, 0.5*(1 + nfX + uvC_x / ((uvX_max - uvX_min)*genFaceTextureSize)), 0.5*(1 + nfY + uvC_y / ((uvY_max - uvY_min)*genFaceTextureSize)));
+                        const nfX = fX / faceNb, nfY = fY / faceNb;
 
+                        genGeometry.getAttribute("uv").setXY(vA, nfX + (uvA_x - uvX_min)/faceNb, nfY + (uvA_y - uvY_min)/faceNb);
+                        genGeometry.getAttribute("uv").setXY(vB, nfX + (uvB_x - uvX_min)/faceNb, nfY + (uvB_y - uvY_min)/faceNb);
+                        genGeometry.getAttribute("uv").setXY(vC, nfX + (uvC_x - uvX_min)/faceNb, nfY + (uvC_y - uvY_min)/faceNb);
+
+                        //console.log("UV vA: ", nfX, nfY, uvA_x, uvA_y, genGeometry.getAttribute("uv").getX(vA), genGeometry.getAttribute("uv").getY(vA));
                     }
                 }
-
+                //genGeometry.computeVertexNormals();
+                genGeometry.index.needsUpdate = true;
+                genGeometry.getAttribute("position").needsUpdate = true;
+                genGeometry.getAttribute("uv").needsUpdate = true;
             }
 
             const onXRFrame = (time, frame) => {
@@ -331,9 +378,10 @@
                         gl.TEXTURE_2D, texture, 0);
                     gl.readPixels(0, 0, view.camera.width, view.camera.height,
                         gl.RGBA, gl.UNSIGNED_BYTE, readback_pixels);
-
-                    if (polycount == 0 || true) polygonize(view, session.renderState.baseLayer, frame, readback_pixels);
-
+                    
+                    var timeBefore = Date.now();
+                    polygonize(view, session.renderState.baseLayer, frame, readback_pixels);
+                    console.log("Polygonize took", Date.now() - timeBefore, "milliseconds");
                     const viewport = session.renderState.baseLayer.getViewport(view);
                     renderer.setSize(viewport.width, viewport.height)
 
@@ -354,7 +402,8 @@
                     gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer)
 
                     // Render the scene with THREE.WebGLRenderer.
-                    renderer.render(scene, camera)
+                    //renderer.clear();
+                    renderer.render(scene, camera);
                 }
             }
             session.requestAnimationFrame(onXRFrame);
