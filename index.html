@@ -142,6 +142,7 @@
                 }
             });
             var readback_framebuffer = gl.createFramebuffer();
+            var copyXrTexture_framebuffer = gl.createFramebuffer();
             var readback_pixels;
             var polycount = 0;
 
@@ -237,6 +238,9 @@
 
                 var hitResultCount = 0;
                 var remainingVertexCount = 0;
+                
+                var timeBef = Date.now();
+                
                 for (var x = 0; x < frameWidth; x++) {
                     for (var y = 0; y < frameHeight; y++) {
                         const hitTestResults = frame.getHitTestResults(hitTestArray[x][y]);
@@ -260,8 +264,10 @@
                         }
                     }
                 }
+                
+                console.log("Vertex adding took", Date.now() - timeBef);
                 // Don't reset faces
-                var timeBef = Date.now();
+
                 for (var i = 0; i + 2 < genVertexCount; i++) {
                     for (var j = i + 1; j + 1 < genVertexCount; j++) {
                         if (posVec.fromBufferAttribute(basePositions, i).distanceToSquared(projectVec.fromBufferAttribute(basePositions, j)) < faceDistanceTreshold * faceDistanceTreshold) {
@@ -270,11 +276,11 @@
                                 if (triplets.indexOf(tripletIntegers(i, j, k)) == -1 &&
                                     posVec.fromBufferAttribute(basePositions, k).distanceToSquared(projectVec.fromBufferAttribute(basePositions, i)) < faceDistanceTreshold * faceDistanceTreshold &&
                                     posVec.fromBufferAttribute(basePositions, k).distanceToSquared(projectVec.fromBufferAttribute(basePositions, j)) < faceDistanceTreshold * faceDistanceTreshold) {
-                                    
-                                    genGeometry.getAttribute("position").copyAt(faceCount*3, basePositions, i);
-                                    genGeometry.getAttribute("position").copyAt(faceCount*3 + 1, basePositions, j);
-                                    genGeometry.getAttribute("position").copyAt(faceCount*3 + 2, basePositions, k);
-                                    genGeometry.index.setXYZ(faceCount, faceCount*3, faceCount*3 + 1, faceCount*3 + 2);
+
+                                    genGeometry.getAttribute("position").copyAt(faceCount * 3, basePositions, i);
+                                    genGeometry.getAttribute("position").copyAt(faceCount * 3 + 1, basePositions, j);
+                                    genGeometry.getAttribute("position").copyAt(faceCount * 3 + 2, basePositions, k);
+                                    genGeometry.index.setXYZ(faceCount, faceCount * 3, faceCount * 3 + 1, faceCount * 3 + 2);
                                     faceCount++;
 
                                     triplets.push(tripletIntegers(i, j, k));
@@ -283,7 +289,7 @@
                         }
                     }
                 }
-                //console.log("Face adding took", Date.now() - timeBef);
+                console.log("Face adding took", Date.now() - timeBef);
                 const faceTriangle = new THREE.Triangle();
 
                 const posA = new THREE.Vector3();
@@ -308,9 +314,11 @@
                 }
 
                 var freeFaceIndex = 0;
-                const midScreen = new THREE.Vector3(-1 + 1/scaleX, -1 + 1/scaleY, 0);
+                const midScreen = new THREE.Vector3(-1 + 1 / scaleX, -1 + 1 / scaleY, 0);
                 //console.log("Current face count :", triplets.length);
                 const texCopyVec = new THREE.Vector2();
+
+                timeBef = Date.now();
                 for (var faceIndex = 0; faceIndex < faceCount && faceIndex < maxFaces; faceIndex++) {
                     const i = faceIndex;
                     //console.log("Hit results :", hitResultCount);
@@ -347,15 +355,26 @@
                         const fX = Math.floor(faceIndex / faceNb),
                             fY = faceIndex % faceNb;
 
-
+                        /*
                         pasteTexture(camera_pixels, Math.round(uvX_min * texWidth),
                             Math.round(uvY_min * texHeight), Math.round((uvX_max - uvX_min) * texWidth),
                             Math.round((uvY_max - uvY_min) * texHeight), texWidth,
                             copyFaceTexture.image.data, 0, 0, genFaceTextureSize, genFaceTextureSize, genFaceTextureSize);
+                        */
+                        //texCopyVec.set(fX * genFaceTextureSize, fY * genFaceTextureSize);
 
-                        texCopyVec.set(fX * genFaceTextureSize, fY * genFaceTextureSize);
                         //console.log(texCopyVec, copyFaceTexture.image.width, copyFaceTexture.image.height, xrTexture.image.width, xrTexture.image.height);
-                        renderer.copyTextureToTexture(texCopyVec, copyFaceTexture, xrTexture);
+                        //gl.bindTexture ?
+
+                        gl.bindTexture(gl.TEXTURE_2D, renderer.properties.get(xrTexture).__webglTexture);
+                        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, copyXrTexture_framebuffer);
+                        gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                            gl.TEXTURE_2D, renderer.properties.get(xrTexture).__webglTexture, 0);
+                        //gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, ); ?
+                        gl.blitFramebuffer(Math.round(uvX_min * texWidth),
+                            Math.round(uvY_min * texHeight), Math.round(uvX_max * texWidth),
+                            Math.round(uvY_max * texHeight), fX * genFaceTextureSize, fY * genFaceTextureSize, (fX + 1) * genFaceTextureSize, (fY + 1) * genFaceTextureSize, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+                        //renderer.copyTextureToTexture(texCopyVec, copyFaceTexture, xrTexture);
 
 
                         const nfX = fX / faceNb, nfY = fY / faceNb;
@@ -367,6 +386,7 @@
                         //console.log("UV vA: ", nfX, nfY, uvA_x, uvA_y, genGeometry.getAttribute("uv").getX(vA), genGeometry.getAttribute("uv").getY(vA));
                     }
                 }
+                console.log("Texture blitting took", Date.now() - timeBef);
                 //console.log(genGeometry.index.array.slice(1, 100));
                 //console.log(genGeometry.getAttribute("position").array.slice(1, 100));
                 //genGeometry.computeVertexNormals();
@@ -399,12 +419,13 @@
                     readback_pixels.fill(0);
 
                     gl.bindTexture(gl.TEXTURE_2D, texture);
-                    gl.bindFramebuffer(gl.FRAMEBUFFER, readback_framebuffer);
-                    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, readback_framebuffer);
+                    gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
                         gl.TEXTURE_2D, texture, 0);
-                    gl.readPixels(0, 0, view.camera.width, view.camera.height,
+                    /*
+                        gl.readPixels(0, 0, view.camera.width, view.camera.height,
                         gl.RGBA, gl.UNSIGNED_BYTE, readback_pixels);
-
+                    */
                     var timeBefore = Date.now();
                     polygonize(view, session.renderState.baseLayer, frame, readback_pixels);
                     console.log("Polygonize took", Date.now() - timeBefore, "milliseconds");
@@ -425,10 +446,10 @@
                     }
 
                     // Bind the graphics framebuffer to the baseLayer's framebuffer
-                    //gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer)
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer)
 
                     // Render the scene with THREE.WebGLRenderer.
-                    //renderer.clear();
+                    renderer.clear();
                     /*
                     if (viewWidth != view.camera.width || viewHeight != view.camera.height) {
                         viewWidth = view.camera.width;
