@@ -6,7 +6,6 @@
     <meta name="viewport"
         content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
     <title>Hello WebXR!</title>
-    <script type="text/javascript" src="https://spectorcdn.babylonjs.com/spector.bundle.js"></script>
     <!-- three.js -->
     <script src="https://unpkg.com/three@0.144.0/build/three.js"></script>
     <script src="https://unpkg.com/three@0.144.0/examples/js/loaders/GLTFLoader.js"></script>
@@ -39,22 +38,20 @@
                 viewport.width + ",height=" + viewport.height + ",x=" +
                 viewport.x + ",y=" + viewport.y + "}");
 
-            console.log("projection:", Array.from(projectionMatrix).join(", "));
-            console.log(intrinsicString);
+            //console.log("projection:", Array.from(projectionMatrix).join(", "));
+            //console.log(intrinsicString);
             const retMatrix = new THREE.Matrix4();
             retMatrix.set(
-                ax, gamma, u0, 0,
-                0, ay, v0, 0,
-                0, 0, 1, 0,
-                0, 0, 0, 0
+                ax / u0, 0, 0, 0,
+                0, ay / v0, 0, 0,
+                0, 0, p[10], p[11],
+                0, 0, -1, 0
             );
             return retMatrix;
         }
 
-        var spector = new SPECTOR.Spector();
 
         async function activateXR() {
-            spector.displayUI();
             // Add a canvas element and initialize a WebGL context that is compatible with WebXR.
             const canvas = document.createElement("canvas");
             document.body.appendChild(canvas);
@@ -75,6 +72,8 @@
                 context: gl
             });
             renderer.autoClear = false;
+            var viewWidth = 0;
+            var viewHeight = 0;
 
             // The API directly updates the camera matrices.
             // Disable matrix auto updates so three.js doesn't attempt
@@ -163,6 +162,8 @@
 
             var genVertexCount = 0;
 
+            const basePositions = new THREE.BufferAttribute(new Float32Array(maxVertices * 3).fill(0), 3);
+
             const genGeometry = new THREE.BufferGeometry();
             genGeometry.setIndex(new THREE.BufferAttribute(new Uint16Array(maxFaces).fill(0), 3));
             genGeometry.index.setUsage(THREE.DynamicDrawUsage);
@@ -187,6 +188,7 @@
             });
 
             const genMesh = new THREE.Mesh(genGeometry, genMaterial);
+            genMesh.frustumCulled = false;
             scene.add(genMesh);
             /* Gen Mesh done */
 
@@ -194,9 +196,9 @@
 
                 const viewport = backgroundLayer.getViewport(view);
 
-                const mininumDistance = 0.05;
+                const mininumDistance = 0.01; // 0.05 at 1.5 meters
 
-                const faceDistanceTreshold = 1.4 * mininumDistance;
+                const faceDistanceTreshold = 1.6 * mininumDistance; // if distance treshold is too small, faces won't be created.
 
                 const pairIntegers = (a, b) => {
                     return Math.round(((a + b) * (a + b + 1) + b) / 2);
@@ -214,7 +216,8 @@
                     return false;
                 }
 
-                const viewMat = getCameraIntrinsics(view.projectionMatrix, viewport);//new THREE.Matrix4().fromArray(view.projectionMatrix);
+                //const projMat = getCameraIntrinsics(view.projectionMatrix, viewport);//new THREE.Matrix4().fromArray(view.projectionMatrix);
+                const projMat = new THREE.Matrix4().fromArray(view.projectionMatrix);
                 const viewMatInv = new THREE.Matrix4().fromArray(view.projectionMatrix).invert();
                 const camMatrix = new THREE.Matrix4().fromArray(view.transform.matrix);
                 const camMatrixInv = new THREE.Matrix4().fromArray(view.transform.matrix).invert();
@@ -224,8 +227,10 @@
                 const posVec = new THREE.Vector3();
                 const projectVec = new THREE.Vector3();
 
-                const scaleX = view.camera.width / viewport.width;
-                const scaleY = view.camera.height / viewport.height;
+                //const scaleX = view.camera.width / viewport.width;
+                //const scaleY = view.camera.height / viewport.height;
+                const scaleX = viewport.width / view.camera.width;
+                const scaleY = viewport.height / view.camera.height;
                 //console.log("Scales (X, Y):", scaleX, scaleY);
 
                 //if (genVertexCount > 0) console.log("last added vertex: ", genVertexCount - 1, genGeometry.getAttribute("position").getX(genVertexCount - 1), genGeometry.getAttribute("position").getY(genVertexCount - 1), genGeometry.getAttribute("position").getZ(genVertexCount - 1));
@@ -238,7 +243,7 @@
                         if (hitTestResults.length > 0) {
                             const hitPose = hitTestResults[0].getPose(referenceSpace);
                             posVec.set(hitPose.transform.position.x, hitPose.transform.position.y, hitPose.transform.position.z);
-                            if (!isTooClose(posVec, mininumDistance, genGeometry.getAttribute("position"), genVertexCount)) {
+                            if (!isTooClose(posVec, mininumDistance, basePositions, genVertexCount)) {
                                 /* to rearrange
                                 projectVec.copy(position);
                                 projectVec.applyMatrix4(camMatrixInv);
@@ -246,7 +251,7 @@
                                 uvs.push((scaleX * projectVec.x + 1.0) / 2, (scaleY * projectVec.y + 1.0) / 2);
                                 */
                                 //console.log(genVertexCount, posVec.x, posVec.y, posVec.z);
-                                genGeometry.getAttribute("position").setXYZ(genVertexCount, posVec.x, posVec.y, posVec.z);
+                                basePositions.setXYZ(genVertexCount, posVec.x, posVec.y, posVec.z);
                                 //console.log("last added vertex af: ", genVertexCount, genGeometry.getAttribute("position").getX(genVertexCount), genGeometry.getAttribute("position").getY(genVertexCount), genGeometry.getAttribute("position").getZ(genVertexCount));
                                 genVertexCount++;
                                 remainingVertexCount++;
@@ -256,32 +261,40 @@
                     }
                 }
                 // Don't reset faces
+                var timeBef = Date.now();
                 for (var i = 0; i + 2 < genVertexCount; i++) {
                     for (var j = i + 1; j + 1 < genVertexCount; j++) {
-                        if (posVec.fromBufferAttribute(genGeometry.getAttribute("position"), i).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.getAttribute("position"), j)) < faceDistanceTreshold * faceDistanceTreshold) {
+                        if (posVec.fromBufferAttribute(basePositions, i).distanceToSquared(projectVec.fromBufferAttribute(basePositions, j)) < faceDistanceTreshold * faceDistanceTreshold) {
                             //console.log("got dist OK 1");
                             for (var k = j + 1; k < genVertexCount; k++) {
                                 if (triplets.indexOf(tripletIntegers(i, j, k)) == -1 &&
-                                    posVec.fromBufferAttribute(genGeometry.getAttribute("position"), k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.getAttribute("position"), i)) < faceDistanceTreshold * faceDistanceTreshold &&
-                                    posVec.fromBufferAttribute(genGeometry.getAttribute("position"), k).distanceToSquared(projectVec.fromBufferAttribute(genGeometry.getAttribute("position"), j)) < faceDistanceTreshold * faceDistanceTreshold) {
-                                    genGeometry.index.setXYZ(faceCount++, i, j, k);
+                                    posVec.fromBufferAttribute(basePositions, k).distanceToSquared(projectVec.fromBufferAttribute(basePositions, i)) < faceDistanceTreshold * faceDistanceTreshold &&
+                                    posVec.fromBufferAttribute(basePositions, k).distanceToSquared(projectVec.fromBufferAttribute(basePositions, j)) < faceDistanceTreshold * faceDistanceTreshold) {
+                                    
+                                    genGeometry.getAttribute("position").copyAt(faceCount*3, basePositions, i);
+                                    genGeometry.getAttribute("position").copyAt(faceCount*3 + 1, basePositions, j);
+                                    genGeometry.getAttribute("position").copyAt(faceCount*3 + 2, basePositions, k);
+                                    genGeometry.index.setXYZ(faceCount, faceCount*3, faceCount*3 + 1, faceCount*3 + 2);
+                                    faceCount++;
+
                                     triplets.push(tripletIntegers(i, j, k));
                                 }
                             }
                         }
                     }
                 }
+                //console.log("Face adding took", Date.now() - timeBef);
                 const faceTriangle = new THREE.Triangle();
 
                 const posA = new THREE.Vector3();
                 const posB = new THREE.Vector3();
                 const posC = new THREE.Vector3();
 
-                const pasteTexture = (origin, sx, sy, sw, sh, destination, dx, dy, w, h) => {
-                    for (var i = sx; i < sx + sw; i++) {
-                        for (var j = sy; j < sy + sh; j++) {
+                const pasteTexture = (origin, sx, sy, sw, sh, sWidth, destination, dx, dy, w, h, dWidth) => {
+                    for (var i = dx; i < dx + w; i++) {
+                        for (var j = dy; j < dy + h; j++) {
                             for (var c = 0; c < 4; c++) {
-                                destination[dx + Math.ceil(w * (i + c - sx) / sw)] = origin[i + c];
+                                destination[j * dWidth * 4 + i * 4 + c] = origin[sy * sWidth * 4 + sx * 4 + Math.ceil(sh * (j - dy) / h) * sWidth * 4 + Math.ceil(sw * (i - dx) / w) * 4 + c];
                             }
                         }
                     }
@@ -295,6 +308,7 @@
                 }
 
                 var freeFaceIndex = 0;
+                const midScreen = new THREE.Vector3(-1 + 1/scaleX, -1 + 1/scaleY, 0);
                 //console.log("Current face count :", triplets.length);
                 const texCopyVec = new THREE.Vector2();
                 for (var faceIndex = 0; faceIndex < faceCount && faceIndex < maxFaces; faceIndex++) {
@@ -303,52 +317,64 @@
                     //console.log("Remaining vertices :", remainingVertexCount);
                     //console.log("Got faces to add!");
                     const vA = genGeometry.index.getX(i), vB = genGeometry.index.getY(i), vC = genGeometry.index.getZ(i);
-                    posA.fromBufferAttribute(genGeometry.getAttribute("position"), vA)
-                        .applyMatrix4(camMatrixInv)
-                        .applyMatrix4(viewMat);
+                    posA.fromBufferAttribute(genGeometry.getAttribute("position"), vA);
+                    //console.log("posA v:", posA);
+                    posA.applyMatrix4(camMatrixInv);
+                    //console.log("posA cam:", posA);
+                    posA.applyMatrix4(projMat);
+                    //console.log("posA proj:", posA);
                     posB.fromBufferAttribute(genGeometry.getAttribute("position"), vB)
                         .applyMatrix4(camMatrixInv)
-                        .applyMatrix4(viewMat);
+                        .applyMatrix4(projMat);
                     posC.fromBufferAttribute(genGeometry.getAttribute("position"), vC)
                         .applyMatrix4(camMatrixInv)
-                        .applyMatrix4(viewMat);
+                        .applyMatrix4(projMat);
                     faceTriangle.set(posA, posB, posC);
                     var faceArea = faceTriangle.getArea();
-                    if (faceArea > genFacesArea[faceIndex]) {
+                    //if (faceIndex == 0) console.log("Proj pos", faceArea, posA, posB, posC);
+                    if (genFacesArea[faceIndex] < 0.001) {//faceArea > genFacesArea[faceIndex] && faceTriangle.containsPoint(midScreen)) { 
+                        // faceArea > //&& faceTriangle.containsPoint(midScreen)) {
                         //console.log("Adding/Updating Face!");
+                        //console.log("Proj acc");
                         const texWidth = view.camera.width, texHeight = view.camera.height;
-                        const uvA_x = posA.x/texWidth, uvB_x = posB.x/texWidth, uvC_x = posC.x/texWidth;
-                        const uvA_y = posA.y/texHeight, uvB_y = posB.y/texHeight, uvC_y = posC.y/texHeight;
+                        const uvA_x = scaleX * (posA.x + 1) / 2, uvB_x = scaleX * (posB.x + 1) / 2, uvC_x = scaleX * (posC.x + 1) / 2;
+                        //const uvA_y = posA.y/texHeight, uvB_y = posB.y/texHeight, uvC_y = posC.y/texHeight;
+                        const uvA_y = scaleY * (posA.y + 1) / 2, uvB_y = scaleY * (posB.y + 1) / 2, uvC_y = scaleY * (posC.y + 1) / 2;
                         const uvX_min = Math.min(uvA_x, uvB_x, uvC_x), uvX_max = Math.max(uvA_x, uvB_x, uvC_x);
                         const uvY_min = Math.min(uvA_y, uvB_y, uvC_y), uvY_max = Math.max(uvA_y, uvB_y, uvC_y);
                         genFacesArea[faceIndex] = faceArea;
                         const faceNb = Math.floor(genTextureSize / genFaceTextureSize);
                         const fX = Math.floor(faceIndex / faceNb),
                             fY = faceIndex % faceNb;
-                        
+
+
                         pasteTexture(camera_pixels, Math.round(uvX_min * texWidth),
-                            texHeight - Math.round(uvY_min * texHeight), Math.round((uvX_max - uvX_min) * texWidth),
-                            Math.round((uvY_max - uvY_min) * texHeight),
-                            copyFaceTexture.image.data, 0, 0, genFaceTextureSize, genFaceTextureSize);
-                        
+                            Math.round(uvY_min * texHeight), Math.round((uvX_max - uvX_min) * texWidth),
+                            Math.round((uvY_max - uvY_min) * texHeight), texWidth,
+                            copyFaceTexture.image.data, 0, 0, genFaceTextureSize, genFaceTextureSize, genFaceTextureSize);
+
                         texCopyVec.set(fX * genFaceTextureSize, fY * genFaceTextureSize);
                         //console.log(texCopyVec, copyFaceTexture.image.width, copyFaceTexture.image.height, xrTexture.image.width, xrTexture.image.height);
-                        renderer.copyTextureToTexture( texCopyVec, copyFaceTexture, xrTexture);
+                        renderer.copyTextureToTexture(texCopyVec, copyFaceTexture, xrTexture);
 
 
                         const nfX = fX / faceNb, nfY = fY / faceNb;
 
-                        genGeometry.getAttribute("uv").setXY(vA, nfX + (uvA_x - uvX_min)/faceNb, nfY + (uvA_y - uvY_min)/faceNb);
-                        genGeometry.getAttribute("uv").setXY(vB, nfX + (uvB_x - uvX_min)/faceNb, nfY + (uvB_y - uvY_min)/faceNb);
-                        genGeometry.getAttribute("uv").setXY(vC, nfX + (uvC_x - uvX_min)/faceNb, nfY + (uvC_y - uvY_min)/faceNb);
+                        genGeometry.getAttribute("uv").setXY(vA, nfX + (uvA_x - uvX_min) / ((uvX_max - uvX_min) * faceNb), nfY + (uvA_y - uvY_min) / ((uvY_max - uvY_min) * faceNb));
+                        genGeometry.getAttribute("uv").setXY(vB, nfX + (uvB_x - uvX_min) / ((uvX_max - uvX_min) * faceNb), nfY + (uvB_y - uvY_min) / ((uvY_max - uvY_min) * faceNb));
+                        genGeometry.getAttribute("uv").setXY(vC, nfX + (uvC_x - uvX_min) / ((uvX_max - uvX_min) * faceNb), nfY + (uvC_y - uvY_min) / ((uvY_max - uvY_min) * faceNb));
 
                         //console.log("UV vA: ", nfX, nfY, uvA_x, uvA_y, genGeometry.getAttribute("uv").getX(vA), genGeometry.getAttribute("uv").getY(vA));
                     }
                 }
+                //console.log(genGeometry.index.array.slice(1, 100));
+                //console.log(genGeometry.getAttribute("position").array.slice(1, 100));
                 //genGeometry.computeVertexNormals();
                 genGeometry.index.needsUpdate = true;
                 genGeometry.getAttribute("position").needsUpdate = true;
                 genGeometry.getAttribute("uv").needsUpdate = true;
+                genGeometry.computeBoundingBox();
+                genGeometry.computeBoundingSphere();
             }
 
             const onXRFrame = (time, frame) => {
@@ -378,7 +404,7 @@
                         gl.TEXTURE_2D, texture, 0);
                     gl.readPixels(0, 0, view.camera.width, view.camera.height,
                         gl.RGBA, gl.UNSIGNED_BYTE, readback_pixels);
-                    
+
                     var timeBefore = Date.now();
                     polygonize(view, session.renderState.baseLayer, frame, readback_pixels);
                     console.log("Polygonize took", Date.now() - timeBefore, "milliseconds");
@@ -393,16 +419,23 @@
                     const hitTestResults = frame.getHitTestResults(hitTestSource);
                     if (hitTestResults.length > 0 && reticle) {
                         const hitPose = hitTestResults[0].getPose(referenceSpace);
-                        reticle.visible = true;
+                        reticle.visible = false;
                         reticle.position.set(hitPose.transform.position.x, hitPose.transform.position.y, hitPose.transform.position.z)
                         reticle.updateMatrixWorld(true);
                     }
 
                     // Bind the graphics framebuffer to the baseLayer's framebuffer
-                    gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer)
+                    //gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer)
 
                     // Render the scene with THREE.WebGLRenderer.
                     //renderer.clear();
+                    /*
+                    if (viewWidth != view.camera.width || viewHeight != view.camera.height) {
+                        viewWidth = view.camera.width;
+                        viewHeight = view.camera.height;
+                        renderer.setSize(view.camera.width, view.camera.height);
+                    }
+                    */
                     renderer.render(scene, camera);
                 }
             }
