@@ -23,7 +23,7 @@
     <button onclick="activateXR()">Start Hello WebXR</button>
     <script>
         var stats = new Stats();
-        var vertexPanel = stats.addPanel( new Stats.Panel( 'vU', '#ff8', '#221' ) );
+        var vertexPanel = stats.addPanel(new Stats.Panel('vU', '#ff8', '#221'));
         stats.showPanel(0); // 0: fps, 1: ms, 2: mb, 3+: custom
         function getCameraIntrinsics(projectionMatrix, viewport) {
             const p = projectionMatrix;
@@ -67,8 +67,8 @@
             document.body.appendChild(stats.dom);
             const gl = canvas.getContext("webgl2", { xrCompatible: true });
 
-            const mininumDistance = parseFloat(document.getElementById("min-dist").value)/100;
-            const defaultRange = parseFloat(document.getElementById("default-range").value)/100;
+            const mininumDistance = parseFloat(document.getElementById("min-dist").value) / 100;
+            const defaultRange = parseFloat(document.getElementById("default-range").value) / 100;
             // To be continued in upcoming steps.
             const scene = new THREE.Scene();
 
@@ -116,7 +116,7 @@
 
             const frameWidth = 10;
             const frameHeight = frameWidth;
-            const dirXRange = defaultRange*frameWidth;
+            const dirXRange = defaultRange * frameWidth;
             const dirYRange = dirXRange;
 
             const hitTestArray = [];
@@ -146,7 +146,10 @@
                 flower = gltf.scene;
             });
 
+            var canUpdateCameraPos = false;
+
             session.addEventListener("select", (event) => {
+                canUpdateCameraPos = true;
                 if (flower) {
                     const clone = flower.clone();
                     clone.position.copy(reticle.position);
@@ -260,9 +263,16 @@
                 const trackedAnchors = frame.trackedAnchors;
                 var trackedAnchorsCount = 0;
                 for (var i = 0; i < anchors.length; i++) {
-                    if (trackedAnchors.has(anchors[i])) {
-                        const pose = frame.getPose(anchors[i].anchorSpace, referenceSpace);
+                    //if (trackedAnchors.has(anchors[i])) {
+
+                    const hitTestResults = frame.getHitTestResults(anchors[i]);
+                    if (hitTestResults.length > 0) {
+                        const pose = hitTestResults[0].getPose(referenceSpace);
+                        //frame.getPose(anchors[i].anchorSpace, referenceSpace);
                         posVec.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+                        
+                        //var distanceSquared = projectVec.fromBufferAttribute(basePositions, anchorIndex[i]).distanceToSquared(posVec);
+                        
                         basePositions.setXYZ(anchorIndex[i], posVec.x, posVec.y, posVec.z);
                         for (var j = 0; j < maxFaces; j++) {
                             if (faceVertexUsage[j] == anchorIndex[i]) {
@@ -283,7 +293,7 @@
 
                             var tooClose = false;
                             const edgeArr = [];
-                            for (var i = 0; i < genVertexCount; i++) {
+                            for (var i = 0; i < genVertexCount && !tooClose; i++) {
                                 var distanceSquared = projectVec.fromBufferAttribute(basePositions, i).distanceToSquared(posVec);
                                 tooClose = distanceSquared < mininumDistance * mininumDistance ? true : tooClose;
                                 if (distanceSquared < faceDistanceTreshold * faceDistanceTreshold) {
@@ -302,10 +312,17 @@
                                     faceCount++;
                                 }
                                 if (edgeArr.length > 1 || genVertexCount < 3) {
+                                    const newOffsetXRRay = new XRRay({ x: camPosition.x, y: camPosition.y, z: camPosition.z, w: 1.0 }, { x: camPosition.x - posVec.x, y: camPosition.y - posVec.y, z: camPosition.z - posVec.z, w: 0.0 });
+                                    session.requestHitTestSource({ space: referenceSpace, offsetRay: newOffsetXRRay }).then(function (newHitTest) {
+                                        anchors.push(newHitTest);
+                                        anchorIndex.push(genVertexCount);
+                                    });
+                                    /*
                                     hitTestResults[0].createAnchor().then(function (anchor) {
                                         anchors.push(anchor);
                                         anchorIndex.push(genVertexCount);
                                     });
+                                    */
                                     basePositions.setXYZ(genVertexCount, posVec.x, posVec.y, posVec.z);
                                     genVertexCount++;
                                 }
@@ -481,6 +498,13 @@
                     // In mobile AR, we only have one view.
                     const view = pose.views[0];
 
+                    if (canUpdateCameraPos) {
+                        canUpdateCameraPos = false;
+                        camera.matrix.fromArray(view.transform.matrix)
+                        camera.projectionMatrix.fromArray(view.projectionMatrix);
+                        camera.updateMatrixWorld(true);
+                    }
+
                     const texture = glBinding.getCameraImage(view.camera);
 
                     const texture_bytes = view.camera.width * view.camera.height * 4;
@@ -504,9 +528,6 @@
                     renderer.setSize(viewport.width, viewport.height)
 
                     // Use the view's transform matrix and projection matrix to configure the THREE.camera.
-                    camera.matrix.fromArray(view.transform.matrix)
-                    camera.projectionMatrix.fromArray(view.projectionMatrix);
-                    camera.updateMatrixWorld(true);
 
                     const hitTestResults = frame.getHitTestResults(hitTestSource);
                     if (hitTestResults.length > 0 && reticle) {
